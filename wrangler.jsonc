@@ -1,0 +1,14 @@
+{
+  "name": "drawing-island",
+  "main": "worker.js",
+  "compatibility_date": "2025-06-01",
+  "assets": { "directory": "./public" },
+  "ai": { "binding": "AI" },
+  "durable_objects": {
+    "bindings": [
+      { "name": "LOBBY", "class_name": "Lobby" },
+      { "name": "ROOM", "class_name": "Room" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Lobby", "Room"] }]
+}

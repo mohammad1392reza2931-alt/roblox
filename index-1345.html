@@ -1,0 +1,168 @@
+<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;700;800&display=swap" rel="stylesheet"><title>جزیره‌ی نقاش‌ها</title>
+<style>
+html,body{margin:0;height:100%;background:#0b1a2b;overflow:hidden;font-family:Vazirmatn,Tahoma,system-ui,sans-serif;color:#fff;touch-action:none;user-select:none;-webkit-user-select:none}
+#g{position:fixed;inset:0;width:100%;height:100%}
+#hud{position:fixed;top:0;left:0;right:0;padding:10px 12px;display:flex;justify-content:space-between;gap:8px;font-size:14px;text-shadow:0 1px 3px #000;pointer-events:none;line-height:1.7}
+#msg{position:fixed;top:64px;left:0;right:0;text-align:center;font-size:17px;font-weight:700;text-shadow:0 2px 4px #000;pointer-events:none}
+.ov{position:fixed;inset:0;background:#000b;display:none;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:16px;text-align:center;z-index:5}
+.ov.on{display:flex}
+input,button{font-family:inherit}button{font:inherit;border:0;border-radius:14px;padding:12px 20px;background:#ffcc33;color:#222;font-weight:700}
+button.s{background:#35465f;color:#fff}
+#dc{background:#fff;border-radius:12px;touch-action:none;width:min(82vw,300px);height:min(82vw,300px)}
+.opt{width:min(86vw,320px);font-size:18px;text-align:right}
+</style></head><body>
+<canvas id="g"></canvas><div id="hud"><span id="h1"></span><span id="h2"></span></div><div id="msg"></div>
+<div class="ov on" id="on"><div style="font-size:28px;font-weight:800">🎨 جزیره‌ی نقاش‌ها</div><div>اسمت رو بنویس و وارد لابی بشو</div><input id="nm" maxlength="12" placeholder="اسم" style="font:inherit;font-size:18px;padding:10px;border-radius:12px;border:0;text-align:center;width:200px"><button id="go">ورود</button></div>
+<div class="ov" id="od"><div id="dt" style="font-size:18px">بکش! ۳۰</div><canvas id="dc" width="300" height="300"></canvas><div><button class="s" id="dclr">پاک کن</button> <button id="dok">تمام شد ✓</button></div></div>
+<div class="ov" id="oc"><div id="cg" style="font-size:17px"></div><div id="cb"></div></div>
+<div class="ov" id="oe"><div id="et" style="font-size:26px;font-weight:800"></div><div id="es"></div><button id="eb">برگشت به لابی</button></div>
+<script>
+const $=s=>document.querySelector(s),g=$("#g"),c=g.getContext("2d");
+let VW,VH;function rs(){g.width=VW=innerWidth;g.height=VH=innerHeight}rs();addEventListener("resize",rs);
+const KINDS={lava:["🌋","آتشفشان"],meteor:["☄️","شهاب‌سنگ"],tornado:["🌪️","گردباد"],lightning:["⚡","صاعقه"],poison:["☣️","ابر سمی"],ice:["❄️","کولاک یخی"]};
+const PAD={x1:-150,x2:150,y1:-430,y2:-250};
+const inPad=p=>p.x>PAD.x1&&p.x<PAD.x2&&p.y>PAD.y1&&p.y<PAD.y2;
+let st="name",me=null,ps=[],hz=[],qt=60,turn=10,shrink=60,R0=360,arN="",ws=null,msgT=0,drawT=0,strokes=0,keys={},joy=null,last=performance.now(),NAME="",byId={},lastPos=0,myId="";
+const mkp=(id,n,col,x,y)=>({id,n,col,x,y,tx:x,ty:y,hp:100,alive:true,busy:false,slow:1,sp:0,ph:Math.random()*6});
+function say(t,s=3.5){$("#msg").textContent=t;msgT=s}
+function conn(path,on){
+  const w=ws=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+path);
+  w.onopen=()=>w.send(JSON.stringify({t:"hi",name:NAME}));
+  w.onmessage=e=>on(JSON.parse(e.data));
+  w.onclose=()=>{if(ws===w&&st==="lobby"){say("اتصال قطع شد؛ دوباره وصل می‌شم...");setTimeout(()=>{if(st==="lobby")joinLobby()},2000)}};
+}
+function joinLobby(){
+  st="lobby";hz=[];byId={};ps=[];
+  ["oe","oc","od"].forEach(i=>$("#"+i).classList.remove("on"));
+  conn("/ws/lobby",m=>{
+    if(m.t==="init"){myId=m.id;me=mkp(m.id,NAME,m.col,0,350);byId[m.id]=me;ps=[me];say("برو توی محوطه‌ی زرد تا وارد صف سرور بشی",5)}
+    else if(m.t==="lob"){qt=m.qt;sync(m.ps)}
+    else if(m.t==="note")say(m.text,5);
+    else if(m.t==="go"){st="joining";say("سرور پیدا شد! در حال ورود...");ws.close();joinRoom(m.room,m.n)}
+  });
+}
+function joinRoom(room,n){
+  conn("/ws/room/"+room+"?n="+n,m=>{
+    if(m.t==="init"){myId=m.id;const o=me;me=mkp(m.id,NAME,m.col,o.x,o.y);me.x=me.tx=Math.max(-250,Math.min(250,Math.random()*500-250));me.y=me.ty=Math.max(-250,Math.min(250,Math.random()*500-250));byId={};byId[m.id]=me;ps=[me]}
+    else if(m.t==="start"){st="match"}
+    else if(m.t==="s"){if(st==="joining")st="match";R0=m.R0;shrink=m.sh;turn=m.tn;arN=m.ar;hz=m.hz;sync(m.ps)}
+    else if(m.t==="msg")say(m.text,3.5);
+    else if(m.t==="note")say(m.text,5);
+    else if(m.t==="draw")openDraw(m.secs);
+    else if(m.t==="opts")showOpts(m);
+    else if(m.t==="out")fin(m);
+  });
+}
+function sync(list){
+  const seen={};
+  list.forEach(a=>{
+    const[id,n,col,x,y,hp,al,bz,sl]=a;seen[id]=1;
+    if(id===myId){me.hp=hp;me.alive=!!al;me.busy=!!bz;me.slow=sl;return}
+    let p=byId[id];if(!p)p=byId[id]=mkp(id,n,col,x,y);
+    p.n=n;p.col=col;p.tx=x;p.ty=y;p.hp=hp;p.alive=!!al;p.busy=!!bz;
+  });
+  for(const id in byId)if(!seen[id]&&id!==myId)delete byId[id];
+  ps=[me,...Object.values(byId).filter(p=>p!==me)];
+}
+function fin(m){
+  if(st==="end")return;st="end";
+  $("#et").textContent=m.win?"🏆 برنده شدی!":"💀 حذف شدی";
+  $("#es").textContent=m.win?"آخرین نفر زنده‌ی جزیره تو بودی":"رتبه‌ی تو: "+m.rank;
+  $("#oe").classList.add("on");$("#od").classList.remove("on");$("#oc").classList.remove("on");
+}
+$("#eb").onclick=()=>{if(ws)ws.close();joinLobby()};
+$("#go").onclick=()=>{NAME=($("#nm").value||"بازیکن").trim().slice(0,12);$("#on").classList.remove("on");joinLobby()};
+// ---------- ورودی ----------
+addEventListener("keydown",e=>keys[e.key]=1);addEventListener("keyup",e=>keys[e.key]=0);
+g.addEventListener("pointerdown",e=>{joy={sx:e.clientX,sy:e.clientY,x:e.clientX,y:e.clientY}});
+g.addEventListener("pointermove",e=>{if(joy){joy.x=e.clientX;joy.y=e.clientY}});
+["pointerup","pointercancel"].forEach(n=>addEventListener(n,()=>joy=null));
+
+function openDraw(secs){drawT=secs||30;strokes=0;dx.fillStyle="#fff";dx.fillRect(0,0,300,300);$("#od").classList.add("on")}
+// ---------- نقاشی ----------
+const dc=$("#dc"),dx=dc.getContext("2d");let pen=false;
+
+function dp(e){const r=dc.getBoundingClientRect();return[(e.clientX-r.left)*300/r.width,(e.clientY-r.top)*300/r.height]}
+dc.addEventListener("pointerdown",e=>{pen=true;const[x,y]=dp(e);dx.lineWidth=5;dx.lineCap="round";dx.strokeStyle="#111";dx.beginPath();dx.moveTo(x,y);dx.lineTo(x+.1,y);dx.stroke();strokes++;e.preventDefault()});
+dc.addEventListener("pointermove",e=>{if(!pen)return;const[x,y]=dp(e);dx.lineTo(x,y);dx.stroke();e.preventDefault()});
+addEventListener("pointerup",()=>pen=false);
+$("#dclr").onclick=()=>{dx.fillStyle="#fff";dx.fillRect(0,0,300,300);strokes=0};
+$("#dok").onclick=sendDraw;
+
+function sendDraw(){
+  if(!$("#od").classList.contains("on"))return;
+  $("#od").classList.remove("on");
+  $("#cg").textContent="🤖 هوش مصنوعی داره نقاشیت رو نگاه می‌کنه...";$("#cb").innerHTML="";$("#oc").classList.add("on");
+  ws.send(JSON.stringify({t:"draw",img:strokes>0?dc.toDataURL("image/jpeg",.6):""}));
+}
+function showOpts(m){
+  $("#cg").textContent=m.guess?"فکر کنم «"+m.guess+"» کشیدی! یکی رو انتخاب کن:":"یکی رو انتخاب کن:";
+  $("#cb").innerHTML="";$("#oc").classList.add("on");
+  m.opts.forEach((x,i)=>{const b=document.createElement("button");b.className="opt";b.textContent=x.emoji+" "+x.title;b.style.display="block";b.style.margin="8px auto";
+    b.onclick=()=>{$("#oc").classList.remove("on");ws.send(JSON.stringify({t:"pick",i}))};$("#cb").appendChild(b)});
+}
+function chr(p){
+  const w=Math.sin(p.ph)*(p.sp?5:0),x=p.x,y=p.y;
+  c.fillStyle="#0004";c.beginPath();c.ellipse(x,y+2,13,5,0,0,6.3);c.fill();
+  c.fillStyle="#2d3a5a";c.fillRect(x-8,y-14+Math.max(0,w),7,14-Math.max(0,w));c.fillRect(x+1,y-14+Math.max(0,-w),7,14-Math.max(0,-w));
+  c.fillStyle=p.col;c.fillRect(x-10,y-34,20,21);
+  c.fillStyle="#ffd23f";c.fillRect(x-15,y-34+w,5,17);c.fillRect(x+10,y-34-w,5,17);
+  c.fillRect(x-8,y-50,16,15);
+  c.fillStyle="#222";c.fillRect(x-4,y-45,2,3);c.fillRect(x+2,y-45,2,3);c.fillRect(x-3,y-40,6,1.5);
+  c.fillStyle="#fff";c.font="11px Vazirmatn,system-ui";c.textAlign="center";c.fillText(p.n,x,y-56);
+  if(st!=="lobby"){c.fillStyle="#000a";c.fillRect(x-16,y-70,32,5);c.fillStyle=p.hp>50?"#4ade80":p.hp>25?"#fbbf24":"#ef4444";c.fillRect(x-16,y-70,32*p.hp/100,5)}
+  if(p.busy){c.font="16px Vazirmatn,system-ui";c.fillText("🎨",x,y-76)}
+}
+function draw(t){
+  c.fillStyle=st==="lobby"?"#6f8f6a":"#1b6fa8";c.fillRect(0,0,VW,VH);
+  c.save();c.translate(VW/2-me.x,VH/2-me.y);
+  if(st==="lobby"){
+    c.fillStyle="#7fa07a";c.fillRect(-440,-540,880,1080);
+    c.fillStyle="#c9b88a";c.fillRect(-120,-250,240,640);
+    c.fillStyle="rgba(255,214,51,"+(.45+.15*Math.sin(t/300))+")";c.fillRect(PAD.x1,PAD.y1,300,180);
+    c.strokeStyle="#ffd633";c.lineWidth=4;c.strokeRect(PAD.x1,PAD.y1,300,180);
+    c.fillStyle="#fff";c.font="bold 18px Vazirmatn,system-ui";c.textAlign="center";c.fillText("🚪 صف ورود به سرور",0,-345);
+    const n=ps.filter(inPad).length;c.font="15px Vazirmatn,system-ui";c.fillText(Math.min(n,10)+" / 10",0,-320);
+  }else{
+    for(let i=0;i<14;i++){c.strokeStyle="#ffffff22";c.lineWidth=2;const y=-700+i*100+(t/40)%100;c.beginPath();c.moveTo(-700,y);c.lineTo(700,y);c.stroke()}
+    c.fillStyle="#e6d08a";c.fillRect(-R0-14,-R0-14,2*R0+28,2*R0+28);
+    c.fillStyle="#5aa84a";c.fillRect(-R0,-R0,2*R0,2*R0);
+    c.fillStyle="#4f9a40";for(let x=-R0;x<R0;x+=60)for(let y=-R0;y<R0;y+=60)if(((x+y)/60)%2===0)c.fillRect(x,y,60,60);
+    hz.forEach(h=>{
+      if(h.k==="vol"){c.fillStyle="#5b3a29";c.beginPath();c.moveTo(h.x-50,h.y+25);c.lineTo(h.x,h.y-55);c.lineTo(h.x+50,h.y+25);c.fill();c.fillStyle="#ff5a1f";c.beginPath();c.arc(h.x,h.y-52,10,0,6.3);c.fill()}
+      else if(h.k==="pool"){c.fillStyle="#ff6a00";c.beginPath();c.arc(h.x,h.y,h.r,0,6.3);c.fill();c.fillStyle="#ffc94d";c.beginPath();c.arc(h.x,h.y,h.r*.5,0,6.3);c.fill()}
+      else if(h.k==="gas"){c.fillStyle="rgba(120,220,60,.4)";c.beginPath();c.arc(h.x,h.y,h.r,0,6.3);c.fill()}
+      else if(h.k==="ice"){c.fillStyle="rgba(190,235,255,.5)";c.beginPath();c.arc(h.x,h.y,h.r,0,6.3);c.fill()}
+      else if(h.k==="tor"){c.strokeStyle="#dfe6ee";c.lineWidth=5;for(let i=0;i<4;i++){c.beginPath();c.ellipse(h.x,h.y-i*14+20,h.r*(.4+i*.2),10,0,0,6.3);c.stroke()}}
+      else if(h.k==="imp"){if(h.done){c.fillStyle=h.m?"#ff7a1a":"#fff7a0";c.beginPath();c.arc(h.x,h.y,h.r,0,6.3);c.fill()}else{c.strokeStyle="#ff3b3b";c.lineWidth=3;c.beginPath();c.arc(h.x,h.y,h.r,0,6.3);c.stroke();c.beginPath();c.arc(h.x,h.y,h.r*Math.max(0,h.t%1),0,6.3);c.stroke()}}
+    });
+  }
+  ps.filter(p=>p.alive).sort((a,b)=>a.y-b.y).forEach(chr);
+  c.restore();
+  if(joy){c.strokeStyle="#fff6";c.lineWidth=3;c.beginPath();c.arc(joy.sx,joy.sy,50,0,6.3);c.stroke();c.fillStyle="#fff5";c.beginPath();c.arc(joy.sx+Math.max(-50,Math.min(50,joy.x-joy.sx)),joy.sy+Math.max(-50,Math.min(50,joy.y-joy.sy)),22,0,6.3);c.fill()}
+}
+
+function hud(){
+  if(st==="lobby"){$("#h1").textContent="🏠 لابی اصلی • "+ps.length+" بازیکن";$("#h2").textContent="شروع صف: "+Math.ceil(qt)+" ثانیه"+(me&&inPad(me)?" • توی صفی ✅":"")}
+  else if(st==="match"||st==="end"){const a=ps.filter(p=>p.alive).length;$("#h1").textContent="❤️ "+Math.ceil(me.hp)+"  |  زنده: "+a+"/"+ps.length;$("#h2").textContent="ریزش جزیره: "+Math.ceil(shrink)+"ث"+(arN?" • نقاش: "+arN:" • نقاش بعدی: "+Math.ceil(turn)+"ث")}
+}
+function loop(now){
+  const dt=Math.min(.05,(now-last)/1000);last=now;
+  if(msgT>0&&(msgT-=dt)<=0)$("#msg").textContent="";
+  if(me&&(st==="lobby"||st==="match")){
+    let dx2=(keys.ArrowRight||keys.d?1:0)-(keys.ArrowLeft||keys.a?1:0),dy2=(keys.ArrowDown||keys.s?1:0)-(keys.ArrowUp||keys.w?1:0);
+    if(joy){const jx=joy.x-joy.sx,jy=joy.y-joy.sy,l=Math.hypot(jx,jy);if(l>8){const k=Math.min(1,l/50)/l;dx2=jx*k;dy2=jy*k}}
+    const L=Math.hypot(dx2,dy2);if(L>1){dx2/=L;dy2/=L}
+    me.sp=0;
+    if(!me.busy&&me.alive){me.x+=dx2*150*me.slow*dt;me.y+=dy2*150*me.slow*dt;me.sp=Math.hypot(dx2,dy2)}
+    if(st==="lobby"){me.x=Math.max(-400,Math.min(400,me.x));me.y=Math.max(-500,Math.min(500,me.y))}
+    else{me.x=Math.max(-700,Math.min(700,me.x));me.y=Math.max(-700,Math.min(700,me.y))}
+    if(ws&&ws.readyState===1&&now-lastPos>100){lastPos=now;ws.send(JSON.stringify({t:"pos",x:me.x,y:me.y}))}
+    ps.forEach(p=>{p.ph+=dt*10;if(p===me)return;const ox=p.x,oy=p.y,k=Math.min(1,dt*10);p.x+=(p.tx-p.x)*k;p.y+=(p.ty-p.y)*k;p.sp=Math.hypot(p.x-ox,p.y-oy)>.3?1:0});
+  }
+  if($("#od").classList.contains("on")){drawT-=dt;$("#dt").textContent="بکش! "+Math.max(0,Math.ceil(drawT));if(drawT<=0)sendDraw()}
+  if(me)draw(now);else{c.fillStyle="#0b1a2b";c.fillRect(0,0,VW,VH)}
+  hud();requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script></body></html>
