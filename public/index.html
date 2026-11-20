@@ -20,14 +20,14 @@ button.s{background:#35465f;color:#fff}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 const $=s=>document.querySelector(s),rr=(a,b)=>a+Math.random()*(b-a);
-let st="name",me=null,byId={},ES={},ws=null,myId="",NAME="",msgT=0,drawT=0,strokes=0,qt=60,turn=10,arN="",keys={},joy=null,yaw=0,pitch=.35,look=null,lastPos=0,bolts=[],now=0;
+let lastMsg=0,st="name",me=null,byId={},ES={},ws=null,myId="",NAME="",msgT=0,drawT=0,strokes=0,qt=60,turn=10,arN="",keys={},joy=null,yaw=0,pitch=.35,look=null,lastPos=0,bolts=[],now=0;
 // ---------- صحنه ----------
 const R=new THREE.WebGLRenderer({antialias:true});R.setPixelRatio(Math.min(devicePixelRatio,2));R.shadowMap.enabled=true;R.domElement.id="g";document.body.prepend(R.domElement);
 const S=new THREE.Scene();S.background=new THREE.Color(0x8ec9ff);S.fog=new THREE.Fog(0x8ec9ff,90,280);
 const cam=new THREE.PerspectiveCamera(60,1,.1,400);
 function rs(){R.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()}rs();addEventListener("resize",rs);
 S.add(new THREE.HemisphereLight(0xffffff,0x446644,.85));
-const sun=new THREE.DirectionalLight(0xfff2cc,1.1);sun.position.set(40,80,30);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-80,right:80,top:80,bottom:-80,far:220});S.add(sun);
+const sun=new THREE.DirectionalLight(0xfff2cc,1.1);sun.position.set(40,80,30);sun.castShadow=true;sun.shadow.bias=-.0004;sun.shadow.normalBias=.05;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-80,right:80,top:80,bottom:-80,far:220});S.add(sun);
 const mat=(c,o={})=>new THREE.MeshStandardMaterial(Object.assign({color:c,roughness:.8},o));
 const G={b:new THREE.BoxGeometry(1,1,1),s:new THREE.SphereGeometry(.5,18,14),c:new THREE.ConeGeometry(.5,1,18),y:new THREE.CylinderGeometry(.5,.5,1,16)};
 const M=(g,c,p=[0,0,0],z=[1,1,1],o)=>{const m=new THREE.Mesh(G[g],mat(c,o));m.position.set(...p);m.scale.set(...z);m.castShadow=m.receiveShadow=true;return m};
@@ -36,7 +36,7 @@ function lab(t,col="#fff",s=1){const c=document.createElement("canvas");c.width=
 // دریا
 const sea=new THREE.Mesh(new THREE.PlaneGeometry(700,700,70,70),mat(0x1b7fb8,{metalness:.3,roughness:.35}));sea.rotation.x=-Math.PI/2;sea.position.y=-1.2;sea.receiveShadow=true;S.add(sea);const sp0=sea.geometry.attributes.position.array.slice();
 // جزیره
-const isl=M("y",0xe6d08a,[0,-1.5,0],[154,3,154]);S.add(isl);S.add(M("y",0x5aa84a,[0,-.25,0],[138,.5,138]));
+const isl=M("y",0xe6d08a,[0,-1.5,0],[154,3,154]);S.add(isl);S.add(M("y",0x5aa84a,[0,-.2,0],[138,.5,138]));
 let sd=7;const rnd=()=>(sd=(sd*16807)%2147483647)/2147483647;
 for(let i=0;i<46;i++){const a=rnd()*6.28,d=rr(0,1)*0+(28+rnd()*38),x=Math.cos(a)*d,z=Math.sin(a)*d;if(z<-36&&Math.abs(x)<30)continue;
  if(i%3){const t=new THREE.Group();t.position.set(x,0,z);t.add(M("y",0x7a5230,[0,2.2,0],[.7,4.4,.7]));for(let k=0;k<3;k++)t.add(M("s",i%2?0x2f8f3a:0x3fae4a,[Math.sin(k*2)*.8,4.6+k*.5,Math.cos(k*2)*.8],[3.2-k*.5,2.4,3.2-k*.5]));S.add(t)}
@@ -102,8 +102,8 @@ custom(e){const g=new THREE.Group(),k={box:"b",sphere:"s",cone:"c",cyl:"y"};(e.p
 function addEnt(e){const g=(B[e.kind]||B.custom)(e);g.visible=false;const H={dragon:6,ufo:5,storm:8,tornado:17,volcano:20,tree:12,house:9,poison:8,ice:7,zombie:5,spider:4,custom:7};if(e.g&&e.kind!=="meteor"){const l=lab(e.g,"#ffe066",1.5);l.position.y=H[e.kind]||7;g.add(l)}S.add(g);ES[e.id]={g,mv:e.mv,x:e.x,z:e.z,tx:e.x,tz:e.z,a:e.a,t0:now+e.d};g.position.set(e.x,0,e.z)}
 // ---------- شبکه ----------
 const say=(t,s=3.5)=>{$("#msg").textContent=t;msgT=s};
-function conn(path,on){const w=ws=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+path);w.onopen=()=>w.send(JSON.stringify({t:"hi",name:NAME}));w.onmessage=e=>on(JSON.parse(e.data));
- w.onclose=()=>{if(ws===w&&st==="lobby"){say("اتصال قطع شد؛ دوباره وصل می‌شم...");setTimeout(()=>{if(st==="lobby")joinLobby()},2000)}}}
+function conn(path,on){const web=/^https?:$/.test(location.protocol),w=ws=new WebSocket((web?(location.protocol==="https:"?"wss://":"ws://")+location.host:"wss://roblox.mohammad1392reza2931.workers.dev")+path);w.onopen=()=>{lastMsg=performance.now();w.send(JSON.stringify({t:"hi",name:NAME}))};w.onmessage=e=>{lastMsg=performance.now();on(JSON.parse(e.data))};
+ w.onclose=()=>{if(ws===w&&st==="joining"&&!me){st="name";say("اتصال به سرور برقرار نشد؛ دوباره امتحان کن",6);$("#on").classList.add("on")}if(ws===w&&st==="lobby"){say("اتصال قطع شد؛ دوباره وصل می‌شم...");setTimeout(()=>{if(st==="lobby")joinLobby()},2000)}}}
 function joinLobby(){st="lobby";clearAll();pad.visible=padL.visible=true;["oe","oc","od"].forEach(i=>$("#"+i).classList.remove("on"));
  conn("/ws/lobby",m=>{if(m.t==="init"){myId=m.id;say("برو توی محوطه‌ی زرد تا وارد صف سرور بشی",5)}
   else if(m.t==="lob"){qt=m.qt;sync(m.ps,10)}else if(m.t==="note")say(m.text,5);
@@ -144,6 +144,7 @@ function hud(){$("#sb").style.display=st==="lobby"?"block":"none";if(!me)return;
 let last=performance.now();
 function loop(t){requestAnimationFrame(loop);const dt=Math.min(.05,(t-last)/1000);last=t;now=t/1000;
  if(msgT>0&&(msgT-=dt)<=0)$("#msg").textContent="";
+ if((st==="lobby"||st==="match")&&ws&&t-lastMsg>4000){say("⚠️ از سرور خبری نیست...",1);if(st==="lobby"&&t-lastMsg>8000){lastMsg=t;ws.close()}}
  const pa=sea.geometry.attributes.position.array;for(let i=0;i<pa.length;i+=3)pa[i+2]=sp0[i+2]+Math.sin(now*.8+sp0[i]*.05+sp0[i+1]*.07)*.6;sea.geometry.attributes.position.needsUpdate=true;
  if(me&&(st==="lobby"||st==="match")){
   let ax=(keys.arrowright||keys.d?1:0)-(keys.arrowleft||keys.a?1:0),ay=(keys.arrowdown||keys.s?1:0)-(keys.arrowup||keys.w?1:0);
