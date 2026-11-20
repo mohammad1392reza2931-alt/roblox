@@ -1,18 +1,25 @@
-// جزیره‌ی نقاش‌ها - سرور چندنفره روی Cloudflare (Durable Objects + Workers AI)
-// Lobby: یک لابی مشترک برای همه + صف ۱ دقیقه‌ای | Room: یک سرور ۱۰ نفره برای هر بازی
-
+// جزیره‌ی نقاش‌ها (نسخه ۳بعدی) - سرور چندنفره روی Cloudflare (Durable Objects + Workers AI)
+// Lobby: لابی مشترک + صف | Room: سرور ۱۰ نفره؛ هر چیزی که کشیده بشه تا آخر بازی روی نقشه می‌مونه
 const MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct";
-const KINDS = ["lava", "meteor", "tornado", "lightning", "poison", "ice"];
-const FA = { lava: ["🌋", "آتشفشان"], meteor: ["☄️", "شهاب‌سنگ"], tornado: ["🌪️", "گردباد"], lightning: ["⚡", "صاعقه"], poison: ["☣️", "ابر سمی"], ice: ["❄️", "کولاک یخی"] };
+// kind: [حرکت, سرعت, شعاع اثر, آسیب بر ثانیه (منفی = درمان), تعداد]
+const T = {
+  zombie: ["chase", 2.2, 1.7, 18, 5], spider: ["chase", 4, 1.5, 14, 3],
+  dragon: ["orbit", 0.35, 8, 15, 1], ufo: ["wander", 6, 5, 20, 1], tornado: ["wander", 5, 6, 16, 1],
+  volcano: ["static", 0, 9, 14, 1], meteor: ["rain", 0, 4.5, 10, 6], storm: ["strike", 0, 26, 25, 1],
+  poison: ["static", 0, 8, 10, 1], ice: ["static", 0, 9, 4, 1], tree: ["static", 0, 6, -6, 1],
+  house: ["static", 0, 5, -3, 1], custom: ["wander", 2, 2.5, 10, 1],
+};
+const KS = Object.keys(T);
 const COLS = ["#e63946", "#2a9d8f", "#7b2cbf", "#f77f00", "#3a86ff", "#ef476f", "#06d6a0", "#8d99ae"];
 const PAD = { x1: -150, x2: 150, y1: -430, y2: -250 };
 const rr = (a, b) => a + Math.random() * (b - a);
 const pick = (a) => a[(Math.random() * a.length) | 0];
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-const PROMPT =
-  "You see a quick drawing made by a player in a battle game. Decide what it depicts. Reply with ONLY JSON: " +
-  '{"guess":"short Persian name of what you think it is","options":[{"kind":"one of lava,meteor,tornado,lightning,poison,ice","title":"short Persian name of a disaster or creature related to the drawing","emoji":"one emoji"}, x3]}. ' +
-  "The 3 kinds must be different and fit the drawing (volcano/fire -> lava, rock/space -> meteor, wind/cloud -> tornado, storm/electricity -> lightning, skull/snake/mushroom -> poison, snow/winter -> ice).";
+const SCHEMA =
+  'Reply with ONLY JSON: {"guess":"short Persian name of what it really is","kind":"one of: ' + KS.join(",") + '","color":"#rrggbb main color","hostile":true or false,"parts":[{"s":"box|sphere|cone|cyl","c":"#rrggbb","p":[x,y,z],"z":[w,h,d]}]}. ' +
+  "Be literal and honest: use a catalog kind ONLY if the thing truly IS that exact thing. Catalog: zombie=zombie/undead, spider=spider, dragon=dragon ONLY (a cat, bird or plane is NOT a dragon), ufo=ufo/alien ship, tornado, volcano, meteor=meteor/falling rock, storm=storm cloud/lightning, poison=toxic cloud/skull, ice=snow/ice field, tree=tree/plant, house=house/building. " +
+  "EVERYTHING ELSE (animals, vehicles, people, tools, food, robots, weapons, ...) MUST be kind=custom with parts: 6 to 14 primitives that make it recognizable (body, head, legs, ears, tail, wheels, ...), real colors, model about 4 units big, centered at x=0 z=0, y up with ground at y=0, front toward +z, p=center, z=size. hostile=false for cute or friendly things. Omit parts for catalog kinds.";
+const PROMPT = "You see a quick drawing made by a player in a 3D party game. Identify what it depicts. " + SCHEMA;
 
 function sendTo(ws, o) { try { ws.send(JSON.stringify(o)); } catch (e) {} }
 const cleanName = (s) => String(s || "بازیکن").replace(/[<>]/g, "").trim().slice(0, 12) || "بازیکن";
@@ -79,18 +86,24 @@ export class Lobby {
 }
 
 // ---------------- سرور بازی (۱۰ نفر) ----------------
+const CH = { x: 0, z: -44 }; // صندلی نقاش جلوی بوم بزرگ
 export class Room {
   constructor(state, env) {
-    this.env = env; this.ps = new Map(); this.hz = []; this.phase = "wait"; this.R0 = 360; this.shrink = 60; this.turn = 10;
-    this.artist = null; this.at = 0; this.pend = null; this.expect = 2; this.iv = null; this.k = 0; this.out = 0;
+    this.env = env; this.ps = new Map(); this.es = []; this.phase = "wait"; this.turn = 8;
+    this.artist = null; this.at = 0; this.expect = 2; this.iv = null; this.k = 0; this.eid = 0;
   }
   async fetch(req) {
     const u = new URL(req.url);
     const { client, server } = upgrade();
     if (this.phase !== "wait" || this.ps.size >= 10) { sendTo(server, { t: "note", text: "این سرور پره" }); server.close(); return new Response(null, { status: 101, webSocket: client }); }
-    this.expect = clamp(+u.searchParams.get("n") || 2, 2, 10);
-    const id = crypto.randomUUID().slice(0, 8);
-    const p = { id, ws: server, n: "بازیکن", col: pick(COLS), x: rr(-250, 250), y: rr(-250, 250), hp: 100, alive: true, busy: false, slow: 1 };
+    const nb = clamp(+u.searchParams.get("bots") || 0, 0, 9);
+    this.expect = nb ? 1 : clamp(+u.searchParams.get("n") || 2, 2, 10);
+    if (nb && !this.ps.size) {
+      const BN = ["آرش", "سارا", "نیما", "مهسا", "کیان", "رها", "پویا", "هانیه", "بابک"];
+      for (let i = 0; i < nb; i++) { const bid = "b" + i, a = rr(0, 6.28), d = rr(8, 40); this.ps.set(bid, { id: bid, ws: null, bot: true, n: "🤖 " + BN[i], col: pick(COLS), x: Math.cos(a) * d, z: Math.sin(a) * d, hp: 100, alive: true, busy: false, slow: 1, wt: 0, tx: 0, tz: 0 }); }
+    }
+    const id = crypto.randomUUID().slice(0, 8), a = rr(0, 6.28), d = rr(5, 30);
+    const p = { id, ws: server, n: "بازیکن", col: pick(COLS), x: Math.cos(a) * d, z: Math.sin(a) * d, hp: 100, alive: true, busy: false, slow: 1 };
     this.ps.set(id, p);
     sendTo(server, { t: "init", id, col: p.col });
     server.addEventListener("message", (e) => this.msg(p, e.data));
@@ -102,56 +115,89 @@ export class Room {
     return new Response(null, { status: 101, webSocket: client });
   }
   alive() { return [...this.ps.values()].filter((p) => p.alive); }
-  all(o) { const m = JSON.stringify(o); for (const p of this.ps.values()) { try { p.ws.send(m); } catch (e) {} } }
+  all(o, skip) { const m = JSON.stringify(o); for (const p of this.ps.values()) if (p !== skip) { try { p.ws.send(m); } catch (e) {} } }
   say(text) { this.all({ t: "msg", text }); }
   start() {
     if (this.phase !== "wait") return;
     if (this.ps.size < 2) { this.all({ t: "note", text: "بازیکنی پیدا نشد" }); return; }
     this.phase = "play";
     this.all({ t: "start" });
-    this.say("بازی شروع شد! آخرین نفر زنده برنده است");
+    this.say("بازی شروع شد! هرچی بکشید تا آخر بازی روی جزیره می‌مونه");
     this.iv = setInterval(() => { this.tick(0.05); if (++this.k % 2 === 0) this.snap(); }, 50);
   }
   msg(p, raw) {
     let m; try { m = JSON.parse(raw); } catch (e) { return; }
     if (m.t === "hi") p.n = cleanName(m.name);
-    else if (m.t === "pos" && p.alive && !p.busy && this.phase === "play") { p.x = clamp(+m.x || 0, -700, 700); p.y = clamp(+m.y || 0, -700, 700); }
-    else if (m.t === "draw" && p === this.artist && !this.pend && !p.asked) { p.asked = true; this.judge(p, m.img); }
-    else if (m.t === "pick" && p === this.artist && this.pend) {
-      const o = this.pend[(+m.i | 0) % 3]; this.release(); this.spawn(o.kind, p.n);
+    else if (m.t === "pos" && p.alive && !p.busy && this.phase === "play") {
+      p.x = clamp(+m.x || 0, -100, 100); p.z = clamp(+m.z || 0, -100, 100);
+      const d = Math.hypot(p.x, p.z); if (d > 100) { p.x *= 100 / d; p.z *= 100 / d; }
     }
+    else if (p === this.artist && m.t === "stroke" && Array.isArray(m.p)) this.all({ t: "stroke", p: m.p.slice(0, 60), n: m.n ? 1 : 0 }, p);
+    else if (p === this.artist && m.t === "clr") this.all({ t: "clr" }, p);
+    else if (m.t === "draw" && p === this.artist && !p.asked) { p.asked = true; this.judge(p, m.img); }
+  }
+  async ask(content) {
+    try {
+      const r = await this.env.AI.run(MODEL, { max_tokens: 700, messages: [{ role: "user", content }] });
+      let t = r && r.response !== undefined ? r.response : r && r.choices ? r.choices[0].message.content : "";
+      if (typeof t !== "string") t = JSON.stringify(t);
+      const m = t.replace(/```json|```/g, "").match(/\{[\s\S]*\}/);
+      return m ? JSON.parse(m[0]) : null;
+    } catch (e) { console.log("ai: " + e.message); return null; }
   }
   async judge(p, img) {
     let o = null;
-    try {
-      if (typeof img === "string" && img.startsWith("data:image/jpeg;base64,") && img.length < 400000) {
-        const r = await this.env.AI.run(MODEL, { max_tokens: 350, messages: [{ role: "user", content: [{ type: "text", text: PROMPT }, { type: "image_url", image_url: { url: img } }] }] });
-        let t = r && r.response !== undefined ? r.response : r && r.choices ? r.choices[0].message.content : "";
-        if (typeof t !== "string") t = JSON.stringify(t);
-        const m = t.replace(/```json|```/g, "").match(/\{[\s\S]*\}/);
-        if (m) o = JSON.parse(m[0]);
-      }
-    } catch (e) { console.log("ai: " + e.message); }
-    let opts = ((o && o.options) || []).filter((x) => x && KINDS.includes(x.kind)).filter((x, i, a) => a.findIndex((y) => y.kind === x.kind) === i).slice(0, 3);
-    const rest = KINDS.filter((k) => !opts.some((x) => x.kind === k)).sort(() => Math.random() - 0.5);
-    while (opts.length < 3) { const k = rest.pop(); opts.push({ kind: k, emoji: FA[k][0], title: FA[k][1] }); }
-    opts = opts.map((x) => ({ kind: x.kind, emoji: String(x.emoji || FA[x.kind][0]).slice(0, 4), title: String(x.title || FA[x.kind][1]).slice(0, 24) }));
-    if (p !== this.artist) return;
-    this.pend = opts;
-    sendTo(p.ws, { t: "opts", guess: o && typeof o.guess === "string" ? o.guess.slice(0, 30) : "", opts });
-  }
-  release() { if (this.artist) { this.artist.busy = false; this.artist.asked = false; } this.artist = null; this.pend = null; this.turn = 10; }
-  spawn(kind, by) {
-    const L = this.R0 - 70, x = rr(-L, L), y = rr(-L, L), hz = this.hz;
-    if (kind === "lava") hz.push({ k: "vol", x, y, life: 12, e: 0 });
-    if (kind === "meteor" || kind === "lightning") {
-      const m = kind === "meteor", n = m ? 6 : 8;
-      for (let i = 0; i < n; i++) hz.push({ k: "imp", x: rr(-L, L), y: rr(-L, L), t: 1 + i * 0.7, r: m ? 62 : 42, d: m ? 40 : 35, m, done: 0 });
+    if (typeof img === "string" && img.startsWith("data:image/jpeg;base64,") && img.length < 400000) {
+      const c = [{ type: "text", text: PROMPT }, { type: "image_url", image_url: { url: img } }];
+      o = (await this.ask(c)) || (await this.ask(c));
     }
-    if (kind === "tornado") hz.push({ k: "tor", x, y, vx: rr(-40, 40), vy: rr(-40, 40), life: 10, r: 62, ct: 0 });
-    if (kind === "poison") hz.push({ k: "gas", x, y, r: 115, life: 10 });
-    if (kind === "ice") hz.push({ k: "ice", x, y, r: 140, life: 10 });
-    this.say(by + " " + FA[kind][0] + " " + FA[kind][1] + " رو آزاد کرد!");
+    if (p !== this.artist) return;
+    this.release();
+    if (!o || !this.spawn(o, p.n)) this.say("هوش مصنوعی نتونست نقاشی " + p.n + " رو تشخیص بده 😕");
+  }
+  async botIdea(a) {
+    const SEEDS = ["a cat", "a dog", "a car", "a castle", "a shark", "a rocket", "a robot", "a dinosaur", "a dragon", "a zombie", "a tornado", "a volcano", "a sword", "a whale", "a snowman", "a tree", "a house", "a spaceship", "a horse", "a pizza"];
+    const o = await this.ask("You are a playful bot in a party game where drawings come alive in 3D. Imagine you just drew " + pick(SEEDS) + ". " + SCHEMA);
+    a.idea = o && (T[o.kind] || (Array.isArray(o.parts) && o.parts.length)) ? o : { kind: pick(KS.filter((k) => k !== "custom")), guess: "" };
+  }
+  botMove(b, dt) {
+    let vx = 0, vz = 0;
+    for (const e of this.es) {
+      if (e.t < 0) continue;
+      const d = Math.hypot(b.x - e.x, b.z - e.z) || 1;
+      if (e.dps > 0 && d < e.r + 6) { vx += ((b.x - e.x) / d) * 2; vz += ((b.z - e.z) / d) * 2; }
+      else if (e.dps < 0 && b.hp < 80 && d < 40) { vx += (e.x - b.x) / d; vz += (e.z - b.z) / d; }
+    }
+    if (!vx && !vz) {
+      b.wt -= dt; if (b.wt <= 0) { b.wt = rr(2, 5); b.tx = rr(-50, 50); b.tz = rr(-50, 50); }
+      const d = Math.hypot(b.tx - b.x, b.tz - b.z); if (d > 2) { vx = (b.tx - b.x) / d; vz = (b.tz - b.z) / d; }
+    }
+    const l = Math.hypot(vx, vz);
+    if (l > 0) { const k = (7 * b.slow * dt * Math.min(1, l)) / l; b.x += vx * k; b.z += vz * k; }
+    const r = Math.hypot(b.x, b.z); if (r > 66) { b.x *= 66 / r; b.z *= 66 / r; }
+  }
+  release() { if (this.artist) { sendTo(this.artist.ws, { t: "done" }); this.artist.busy = false; this.artist.asked = false; } this.artist = null; this.turn = 10; }
+  spawn(o, by) {
+    if (!o) return false;
+    const hex = (c, d) => (/^#[0-9a-f]{6}$/i.test(c) ? c : d);
+    let kind = T[o.kind] ? o.kind : "custom";
+    const parts = kind === "custom" && Array.isArray(o.parts) ? o.parts.slice(0, 14).map((q) => ({
+      s: ["box", "sphere", "cone", "cyl"].includes(q.s) ? q.s : "box", c: hex(q.c, "#999999"),
+      p: [0, 1, 2].map((i) => clamp(+(q.p || [])[i] || 0, -3, 3)), z: [0, 1, 2].map((i) => clamp(+(q.z || [])[i] || 1, 0.1, 4)),
+    })) : null;
+    if (kind === "custom" && !(parts && parts.length)) return false;
+    const [mv, sp, r, dps0, cnt] = T[kind], out = [];
+    const friendly = kind === "custom" && o.hostile === false, dps = friendly ? -4 : dps0;
+    for (let i = 0; i < cnt; i++) {
+      const a = rr(0, 6.28), d = mv === "chase" ? rr(48, 62) : Math.sqrt(Math.random()) * 50;
+      const e = { id: ++this.eid, kind, mv, sp, r, dps, x: Math.cos(a) * d, z: Math.sin(a) * d, a, t: mv === "rain" ? -i * 1.2 : -i * 0.3 };
+      if (mv === "orbit") { e.x = Math.cos(a) * 30; e.z = Math.sin(a) * 30; }
+      this.es.push(e);
+      out.push({ id: e.id, kind, mv, x: e.x, z: e.z, a, col: hex(o.color, null), parts, d: -e.t, g: String(o.guess || "").slice(0, 20) });
+    }
+    this.all({ t: "ent", e: out });
+    this.say(by + " «" + String(o.guess || kind).slice(0, 24) + "» رو کشید!");
+    return true;
   }
   hurt(p, d) { if (!p.alive || p.busy) return; p.hp -= d; if (p.hp <= 0) this.die(p); }
   die(p) {
@@ -160,7 +206,7 @@ export class Room {
     if (p === this.artist) this.release();
     const left = this.alive().length;
     sendTo(p.ws, { t: "out", rank: left + 1, win: false });
-    if (left <= 1 && this.phase === "play") this.finish();
+    if ((left <= 1 || !this.alive().some((q) => !q.bot)) && this.phase === "play") this.finish();
   }
   finish() {
     this.phase = "end";
@@ -171,42 +217,62 @@ export class Room {
     setTimeout(() => { for (const p of this.ps.values()) { try { p.ws.close(); } catch (e) {} } }, 4000);
   }
   snap() {
-    this.all({ t: "s", ps: [...this.ps.values()].map((p) => [p.id, p.n, p.col, p.x | 0, p.y | 0, p.hp | 0, p.alive ? 1 : 0, p.busy ? 1 : 0, p.slow]), hz: this.hz, R0: this.R0, sh: this.shrink | 0, tn: this.turn | 0, ar: this.artist ? this.artist.n : "" });
+    this.all({ t: "s", ps: [...this.ps.values()].map((p) => [p.id, p.n, p.col, +p.x.toFixed(1), +p.z.toFixed(1), p.hp | 0, p.alive ? 1 : 0, p.busy ? 1 : 0, p.slow]), es: this.es.map((e) => [e.id, +e.x.toFixed(1), +e.z.toFixed(1), +e.a.toFixed(2)]), tn: this.turn | 0, ar: this.artist ? this.artist.n : "" });
   }
   tick(dt) {
     if (this.phase !== "play") return;
-    this.shrink -= dt;
-    if (this.shrink <= 0) { this.shrink = 60; if (this.R0 > 200) { this.R0 -= 40; this.say("کناره‌های جزیره ریزش کرد!"); } }
     const live = this.alive();
-    for (const p of live) { p.slow = 1; if (Math.abs(p.x) > this.R0 || Math.abs(p.y) > this.R0) this.hurt(p, 8 * dt); }
-    for (const h of this.hz) {
-      if (h.k === "vol") { h.life -= dt; h.e -= dt; if (h.e <= 0) { h.e = 0.5; this.hz.push({ k: "pool", x: h.x + rr(-220, 220), y: h.y + rr(-220, 220), r: 42, life: 10 }); } }
-      else if (h.k === "imp") {
-        h.t -= dt;
-        if (h.t <= 0 && !h.done) { h.done = 0.4; for (const p of this.alive()) if (Math.hypot(p.x - h.x, p.y - h.y) < h.r) this.hurt(p, h.d); }
-        if (h.done) { h.done -= dt; if (h.done <= 0) h.life = 0; }
-      } else {
-        h.life -= dt;
-        if (h.k === "tor") { h.x += h.vx * dt; h.y += h.vy * dt; h.ct -= dt; if (h.ct <= 0) { h.ct = 1.5; h.vx = rr(-60, 60); h.vy = rr(-60, 60); } }
-        for (const p of this.alive()) {
-          if (Math.hypot(p.x - h.x, p.y - h.y) > h.r) continue;
-          this.hurt(p, (h.k === "pool" ? 20 : h.k === "gas" ? 12 : h.k === "ice" ? 8 : 15) * dt);
-          if (h.k === "ice") p.slow = 0.5;
-        }
+    for (const p of live) p.slow = 1;
+    for (const b of live) if (b.bot && !b.busy) this.botMove(b, dt);
+    for (const e of this.es) {
+      e.t += dt;
+      if (e.t < 0) continue;
+      if (e.mv === "chase") {
+        if (e.t < 2.5) continue; // هنوز داره از زمین بیرون میاد
+        let b = null, bd = 1e9;
+        for (const p of live) { const d = Math.hypot(p.x - e.x, p.z - e.z); if (d < bd && !p.busy) { bd = d; b = p; } }
+        if (b) { e.a = Math.atan2(b.z - e.z, b.x - e.x); e.x += Math.cos(e.a) * e.sp * dt; e.z += Math.sin(e.a) * e.sp * dt; }
+      } else if (e.mv === "wander") {
+        e.a += rr(-2, 2) * dt; e.x += Math.cos(e.a) * e.sp * dt; e.z += Math.sin(e.a) * e.sp * dt;
+        if (Math.hypot(e.x, e.z) > 60) e.a = Math.atan2(-e.z, -e.x);
+      } else if (e.mv === "orbit") { e.a += e.sp * dt; e.x = Math.cos(e.a) * 30; e.z = Math.sin(e.a) * 30; }
+      else if (e.mv === "rain" && e.t < 3) continue;
+      else if (e.mv === "strike") {
+        e.cd = (e.cd === undefined ? 2 : e.cd) - dt;
+        if (e.cd <= 0) { e.cd = 2.5; const v = pick(live.filter((p) => Math.hypot(p.x - e.x, p.z - e.z) < e.r).concat([null])); if (v) { this.hurt(v, e.dps); this.all({ t: "bolt", x: v.x, z: v.z }); } }
+        continue;
+      }
+      for (const p of live) {
+        if (Math.hypot(p.x - e.x, p.z - e.z) > e.r) continue;
+        if (e.dps < 0) p.hp = Math.min(100, p.hp - e.dps * dt); else this.hurt(p, e.dps * dt);
+        if (e.kind === "ice") p.slow = 0.5;
       }
     }
-    this.hz = this.hz.filter((h) => (h.k === "imp" ? h.life !== 0 : h.life === undefined || h.life > 0));
     if (this.phase !== "play") return;
     if (!this.artist) {
       this.turn -= dt;
       if (this.turn <= 0) {
         this.turn = 10;
         const a = pick(this.alive().filter((p) => !p.busy));
-        if (a) { this.artist = a; a.busy = true; a.asked = false; this.at = 42; sendTo(a.ws, { t: "draw", secs: 30 }); this.say(a.n + " داره نقاشی می‌کشه... 🎨"); }
+        if (a) {
+          this.artist = a; a.busy = true; a.asked = false; a.x = CH.x; a.z = CH.z; this.at = a.bot ? 8 : 42; this.bt = 0; this.bs = null; a.idea = null;
+          this.all({ t: "clr" }); this.say(a.n + " رفت پشت بوم بزرگ... 🎨");
+          if (a.bot) this.botIdea(a); else sendTo(a.ws, { t: "draw", secs: 30 });
+        }
       }
     } else {
-      this.at -= dt;
-      if (this.at <= 0) { const a = this.artist; this.release(); this.spawn(pick(KINDS), a.n); }
+      const a = this.artist; this.at -= dt;
+      if (a.bot && (this.bt -= dt) <= 0) { // ربات روی بوم خط‌خطی می‌کنه
+        this.bt = 0.12; const n = Math.random() < 0.08 || !this.bs;
+        if (n) this.bs = [rr(40, 320), rr(30, 210)];
+        const pts = []; for (let i = 0; i < 3; i++) { this.bs = [clamp(this.bs[0] + rr(-35, 35), 10, 350), clamp(this.bs[1] + rr(-25, 25), 10, 230)]; pts.push(this.bs.map(Math.round)); }
+        this.all({ t: "stroke", p: pts, n: n ? 1 : 0 });
+      }
+      if (a.bot ? this.at <= 0 && (a.idea || this.at < -10) : (this.at <= 0 && !a.asked) || this.at < -25) {
+        this.release();
+        if (a.bot) this.spawn(a.idea || { kind: pick(KS.filter((k) => k !== "custom")), guess: "" }, a.n);
+        else this.say(a.n + " وقتش تموم شد 😅");
+      }
     }
   }
 }
