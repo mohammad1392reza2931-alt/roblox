@@ -46,7 +46,7 @@ function upgrade() {
 
 // ---------------- لابی اصلی ----------------
 export class Lobby {
-  constructor(state, env) { this.pl = new Map(); this.qt = 60; this.n = 0; this.iv = null; }
+  constructor(state, env) { this.pl = new Map(); this.qt = 60; this.n = 0; this.iv = null; this.lt = 0; }
   async fetch(req) {
     const { client, server } = upgrade();
     const id = crypto.randomUUID().slice(0, 8);
@@ -56,13 +56,18 @@ export class Lobby {
     server.addEventListener("message", (e) => {
       let m; try { m = JSON.parse(e.data); } catch (x) { return; }
       if (m.t === "hi") p.n = cleanName(m.name);
-      if (m.t === "pos") { p.x = clamp(+m.x || 0, -400, 400); p.y = clamp(+m.y || 0, -500, 500); }
+      if (m.t === "pos") { p.x = clamp(+m.x || 0, -400, 400); p.y = clamp(+m.y || 0, -500, 500); this.pump(); }
     });
     const bye = () => { this.pl.delete(id); if (!this.pl.size && this.iv) { clearInterval(this.iv); this.iv = null; } };
     server.addEventListener("close", bye);
     server.addEventListener("error", bye);
-    if (!this.iv) this.iv = setInterval(() => this.tick(), 125);
+    if (!this.iv) this.iv = setInterval(() => this.pump(), 125);
     return new Response(null, { status: 101, webSocket: client });
+  }
+  pump() { // جلو بردن زمان بر اساس ساعت واقعی؛ هم از تایمر صدا زده می‌شه هم با هر پیام بازیکن
+    const t = Date.now(); if (!this.lt) this.lt = t; let n = 0;
+    try { while (t - this.lt >= 125 && n++ < 8) { this.lt += 125; this.tick(); } } catch (e) { console.log("lobby tick: " + (e && e.stack)); }
+    if (t - this.lt > 1000) this.lt = t;
   }
   inPad(p) { return p.x > PAD.x1 && p.x < PAD.x2 && p.y > PAD.y1 && p.y < PAD.y2; }
   tick() {
@@ -90,7 +95,7 @@ const CH = { x: 0, z: -44 }; // صندلی نقاش جلوی بوم بزرگ
 export class Room {
   constructor(state, env) {
     this.env = env; this.ps = new Map(); this.es = []; this.phase = "wait"; this.turn = 8;
-    this.artist = null; this.at = 0; this.expect = 2; this.iv = null; this.k = 0; this.eid = 0;
+    this.artist = null; this.at = 0; this.expect = 2; this.iv = null; this.k = 0; this.eid = 0; this.lt = 0;
   }
   async fetch(req) {
     const u = new URL(req.url);
@@ -114,6 +119,12 @@ export class Room {
     else if (!this.wt) this.wt = setTimeout(() => { if (this.phase === "wait") this.start(); }, 8000);
     return new Response(null, { status: 101, webSocket: client });
   }
+  pump() {
+    if (this.phase !== "play") return;
+    const t = Date.now(); if (!this.lt) this.lt = t; let n = 0;
+    try { while (t - this.lt >= 50 && n++ < 10 && this.phase === "play") { this.lt += 50; this.tick(0.05); if (++this.k % 2 === 0) this.snap(); } } catch (e) { console.log("room tick: " + (e && e.stack)); }
+    if (t - this.lt > 1000) this.lt = t;
+  }
   alive() { return [...this.ps.values()].filter((p) => p.alive); }
   all(o, skip) { const m = JSON.stringify(o); for (const p of this.ps.values()) if (p !== skip) { try { p.ws.send(m); } catch (e) {} } }
   say(text) { this.all({ t: "msg", text }); }
@@ -123,10 +134,11 @@ export class Room {
     this.phase = "play";
     this.all({ t: "start" });
     this.say("بازی شروع شد! هرچی بکشید تا آخر بازی روی جزیره می‌مونه");
-    this.iv = setInterval(() => { this.tick(0.05); if (++this.k % 2 === 0) this.snap(); }, 50);
+    this.iv = setInterval(() => this.pump(), 50);
   }
   msg(p, raw) {
     let m; try { m = JSON.parse(raw); } catch (e) { return; }
+    this.pump();
     if (m.t === "hi") p.n = cleanName(m.name);
     else if (m.t === "pos" && p.alive && !p.busy && this.phase === "play") {
       p.x = clamp(+m.x || 0, -100, 100); p.z = clamp(+m.z || 0, -100, 100);
