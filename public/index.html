@@ -106,11 +106,11 @@ class PollSock{
  constructor(url){this.url=url.replace("/ws/","/poll/");this.sid=Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2);this.out=[];this.readyState=0;this.fails=0;this.stop=false;setTimeout(()=>this.run(),0)}
  send(s){const m=JSON.parse(s);if(m.t==="pos"){const i=this.out.findIndex(x=>x.t==="pos");if(i>=0){this.out[i]=m;return}}this.out.push(m)}
  async run(){const t0=performance.now();
-  try{const r=await fetch(this.url,{method:"POST",body:JSON.stringify({sid:this.sid,msgs:this.out.splice(0,20)})}),d=await r.json();this.fails=0;
+  const ac=new AbortController(),to=setTimeout(()=>ac.abort(),6000);try{const r=await fetch(this.url,{method:"POST",signal:ac.signal,body:JSON.stringify({sid:this.sid,msgs:this.out.splice(0,20)})}),d=await r.json();clearTimeout(to);this.fails=0;
    if(this.readyState===0){this.readyState=1;this.onopen&&this.onopen()}
    for(const m of d.m)this.onmessage&&this.onmessage({data:JSON.stringify(m)});
    if(d.c){this.readyState=3;this.stop=true;this.onclose&&this.onclose({code:1000});return}
-  }catch(e){if(++this.fails>=6){this.readyState=3;this.stop=true;this.onclose&&this.onclose({code:1006});return}}
+  }catch(e){clearTimeout(to);if(++this.fails>=6){this.readyState=3;this.stop=true;this.onclose&&this.onclose({code:1006});return}}
   if(!this.stop)setTimeout(()=>this.run(),Math.max(30,110-(performance.now()-t0)))}
  close(){if(this.stop)return;this.stop=true;this.readyState=3;try{fetch(this.url,{method:"POST",body:JSON.stringify({sid:this.sid,bye:1}),keepalive:true})}catch(e){}}
 }
