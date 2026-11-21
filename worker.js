@@ -27,6 +27,8 @@ const cleanName = (s) => String(s || "بازیکن").replace(/[<>]/g, "").trim()
 export default {
   async fetch(req, env) {
     const u = new URL(req.url);
+    if (u.pathname === "/poll/lobby") return env.LOBBY.get(env.LOBBY.idFromName("main")).fetch(req);
+    if (u.pathname.startsWith("/poll/room/")) return env.ROOM.get(env.ROOM.idFromName(u.pathname.split("/")[3] || "x")).fetch(req);
     if (req.headers.get("Upgrade") !== "websocket") return new Response("not found", { status: 404 });
     if (u.pathname === "/ws/lobby") return env.LOBBY.get(env.LOBBY.idFromName("main")).fetch(req);
     if (u.pathname.startsWith("/ws/room/")) {
@@ -36,6 +38,36 @@ export default {
     return new Response("not found", { status: 404 });
   },
 };
+
+const wsOk = (c) => (c ? new Response(null, { status: 101, webSocket: c }) : new Response("ok"));
+const pj = (arr, c) => new Response('{"m":[' + arr.join(",") + '],"c":' + c + "}", { headers: { "content-type": "application/json", "access-control-allow-origin": "*" } });
+// اتصال جایگزین بدون WebSocket: کلاینت مرتب POST می‌زنه و پیام‌های صف‌شده رو می‌گیره
+async function pollHandle(o, req) {
+  let b; try { b = await req.json(); } catch (e) { b = {}; }
+  const sid = String(b.sid || "");
+  if (sid.length < 8 || sid.length > 40) return new Response("bad", { status: 400 });
+  if (!o.sess) o.sess = new Map();
+  let s = o.sess.get(sid);
+  if (!s) {
+    if (b.bye) return pj([], 1);
+    const L = {};
+    s = {
+      q: [], L, closed: false, last: Date.now(), readyState: 1, accept() {},
+      send(m) { this.q.push(m); if (this.q.length > 400) this.q.shift(); },
+      close() { if (this.closed) return; this.closed = true; this.readyState = 3; try { L.close && L.close(); } catch (e) {} },
+      addEventListener(e, f) { L[e] = f; },
+    };
+    o.sess.set(sid, s);
+    o.fp = s;
+    try { await o.fetch({ url: req.url.replace("/poll", "/ws"), headers: { get: () => "websocket" } }); } finally { o.fp = null; }
+  }
+  s.last = Date.now();
+  if (b.bye) { s.close(); o.sess.delete(sid); return pj([], 1); }
+  for (const m of Array.isArray(b.msgs) ? b.msgs.slice(0, 20) : []) { try { s.L.message && s.L.message({ data: JSON.stringify(m) }); } catch (e) {} }
+  if (o.pump) o.pump();
+  return pj(s.q.splice(0), s.closed ? 1 : 0);
+}
+function reap(o) { if (!o.sess) return; const t = Date.now(); for (const [k, s] of [...o.sess]) if (t - s.last > 6000) { o.sess.delete(k); s.close(); } }
 
 function upgrade() {
   const pair = new WebSocketPair();
@@ -48,7 +80,8 @@ function upgrade() {
 export class Lobby {
   constructor(state, env) { this.pl = new Map(); this.qt = 60; this.n = 0; this.iv = null; this.lt = 0; }
   async fetch(req) {
-    const { client, server } = upgrade();
+    if (new URL(req.url).pathname.startsWith("/poll")) return pollHandle(this, req);
+    const { client, server } = this.fp ? { client: null, server: this.fp } : upgrade();
     const id = crypto.randomUUID().slice(0, 8);
     const p = { id, ws: server, n: "بازیکن", col: pick(COLS), x: 0, y: 350 };
     this.pl.set(id, p);
@@ -62,9 +95,9 @@ export class Lobby {
     server.addEventListener("close", bye);
     server.addEventListener("error", bye);
     if (!this.iv) this.iv = setInterval(() => this.pump(), 125);
-    return new Response(null, { status: 101, webSocket: client });
+    return wsOk(client);
   }
-  pump() { // جلو بردن زمان بر اساس ساعت واقعی؛ هم از تایمر صدا زده می‌شه هم با هر پیام بازیکن
+  pump() { reap(this); // جلو بردن زمان بر اساس ساعت واقعی؛ هم از تایمر صدا زده می‌شه هم با هر پیام بازیکن
     const t = Date.now(); if (!this.lt) this.lt = t; let n = 0;
     try { while (t - this.lt >= 125 && n++ < 8) { this.lt += 125; this.tick(); } } catch (e) { console.log("lobby tick: " + (e && e.stack)); }
     if (t - this.lt > 1000) this.lt = t;
@@ -95,12 +128,13 @@ const CH = { x: 0, z: -44 }; // صندلی نقاش جلوی بوم بزرگ
 export class Room {
   constructor(state, env) {
     this.env = env; this.ps = new Map(); this.es = []; this.phase = "wait"; this.turn = 8;
-    this.artist = null; this.at = 0; this.expect = 2; this.iv = null; this.k = 0; this.eid = 0; this.lt = 0;
+    this.artist = null; this.at = 0; this.expect = 2; this.iv = null; this.k = 0; this.eid = 0; this.lt = 0; this.t0 = Date.now(); this.rot = [];
   }
   async fetch(req) {
     const u = new URL(req.url);
-    const { client, server } = upgrade();
-    if (this.phase !== "wait" || this.ps.size >= 10) { sendTo(server, { t: "note", text: "این سرور پره" }); server.close(); return new Response(null, { status: 101, webSocket: client }); }
+    if (u.pathname.startsWith("/poll")) return pollHandle(this, req);
+    const { client, server } = this.fp ? { client: null, server: this.fp } : upgrade();
+    if (this.phase !== "wait" || this.ps.size >= 10) { sendTo(server, { t: "note", text: "این سرور پره" }); server.close(); return wsOk(client); }
     const nb = clamp(+u.searchParams.get("bots") || 0, 0, 9);
     this.expect = nb ? 1 : clamp(+u.searchParams.get("n") || 2, 2, 10);
     if (nb && !this.ps.size) {
@@ -117,9 +151,11 @@ export class Room {
     server.addEventListener("error", bye);
     if (this.ps.size >= this.expect) this.start();
     else if (!this.wt) this.wt = setTimeout(() => { if (this.phase === "wait") this.start(); }, 8000);
-    return new Response(null, { status: 101, webSocket: client });
+    return wsOk(client);
   }
   pump() {
+    reap(this);
+    if (this.phase === "wait" && this.ps.size >= 2 && Date.now() - this.t0 > 8000) this.start();
     if (this.phase !== "play") return;
     const t = Date.now(); if (!this.lt) this.lt = t; let n = 0;
     try { while (t - this.lt >= 50 && n++ < 10 && this.phase === "play") { this.lt += 50; this.tick(0.05); if (++this.k % 2 === 0) this.snap(); } } catch (e) { console.log("room tick: " + (e && e.stack)); }
@@ -150,7 +186,7 @@ export class Room {
   }
   async ask(content) {
     try {
-      const r = await this.env.AI.run(MODEL, { max_tokens: 700, messages: [{ role: "user", content }] });
+      const r = await Promise.race([this.env.AI.run(MODEL, { max_tokens: 500, messages: [{ role: "user", content }] }), new Promise((_, rj) => setTimeout(() => rj(new Error("timeout")), 30000))]);
       let t = r && r.response !== undefined ? r.response : r && r.choices ? r.choices[0].message.content : "";
       if (typeof t !== "string") t = JSON.stringify(t);
       const m = t.replace(/```json|```/g, "").match(/\{[\s\S]*\}/);
@@ -161,7 +197,10 @@ export class Room {
     let o = null;
     if (typeof img === "string" && img.startsWith("data:image/jpeg;base64,") && img.length < 400000) {
       const c = [{ type: "text", text: PROMPT }, { type: "image_url", image_url: { url: img } }];
-      o = (await this.ask(c)) || (await this.ask(c));
+      this.say("🤖 هوش مصنوعی داره نقاشی " + p.n + " رو نگاه می‌کنه...");
+      const t0 = Date.now();
+      o = await this.ask(c);
+      if (!o && Date.now() - t0 < 12000) o = await this.ask(c);
     }
     if (p !== this.artist) return;
     this.release();
@@ -265,7 +304,12 @@ export class Room {
       this.turn -= dt;
       if (this.turn <= 0) {
         this.turn = 10;
-        const a = pick(this.alive().filter((p) => !p.busy));
+        if (!this.rot.length) {
+          this.rot = this.alive().map((p) => p.id).sort(() => Math.random() - 0.5);
+          if (!this.firstDone) { this.firstDone = true; this.rot.sort((x, y) => (this.ps.get(x).bot ? 1 : 0) - (this.ps.get(y).bot ? 1 : 0)); } // اولین نوبت مال آدم‌هاست
+        }
+        let a = null;
+        while (this.rot.length && !a) { const q = this.ps.get(this.rot.shift()); if (q && q.alive && !q.busy) a = q; }
         if (a) {
           this.artist = a; a.busy = true; a.asked = false; a.x = CH.x; a.z = CH.z; this.at = a.bot ? 8 : 42; this.bt = 0; this.bs = null; a.idea = null;
           this.all({ t: "clr" }); this.say(a.n + " رفت پشت بوم بزرگ... 🎨");
@@ -280,7 +324,7 @@ export class Room {
         const pts = []; for (let i = 0; i < 3; i++) { this.bs = [clamp(this.bs[0] + rr(-35, 35), 10, 350), clamp(this.bs[1] + rr(-25, 25), 10, 230)]; pts.push(this.bs.map(Math.round)); }
         this.all({ t: "stroke", p: pts, n: n ? 1 : 0 });
       }
-      if (a.bot ? this.at <= 0 && (a.idea || this.at < -10) : (this.at <= 0 && !a.asked) || this.at < -25) {
+      if (a.bot ? this.at <= 0 && (a.idea || this.at < -10) : (this.at <= 0 && !a.asked) || this.at < -90) {
         this.release();
         if (a.bot) this.spawn(a.idea || { kind: pick(KS.filter((k) => k !== "custom")), guess: "" }, a.n);
         else this.say(a.n + " وقتش تموم شد 😅");
