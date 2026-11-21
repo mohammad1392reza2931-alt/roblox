@@ -20,7 +20,7 @@ button.s{background:#35465f;color:#fff}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 const $=s=>document.querySelector(s),rr=(a,b)=>a+Math.random()*(b-a);
-let lastMsg=0,st="name",me=null,byId={},ES={},ws=null,myId="",NAME="",msgT=0,drawT=0,strokes=0,qt=60,turn=10,arN="",keys={},joy=null,yaw=0,pitch=.35,look=null,lastPos=0,bolts=[],now=0;
+let lastMsg=0,rx=0,diag="",st="name",me=null,byId={},ES={},ws=null,myId="",NAME="",msgT=0,drawT=0,strokes=0,qt=60,turn=10,arN="",keys={},joy=null,yaw=0,pitch=.35,look=null,lastPos=0,bolts=[],now=0;
 // ---------- صحنه ----------
 const R=new THREE.WebGLRenderer({antialias:true});R.setPixelRatio(Math.min(devicePixelRatio,2));R.shadowMap.enabled=true;R.domElement.id="g";document.body.prepend(R.domElement);
 const S=new THREE.Scene();S.background=new THREE.Color(0x8ec9ff);S.fog=new THREE.Fog(0x8ec9ff,90,280);
@@ -102,8 +102,21 @@ custom(e){const g=new THREE.Group(),k={box:"b",sphere:"s",cone:"c",cyl:"y"};(e.p
 function addEnt(e){const g=(B[e.kind]||B.custom)(e);g.visible=false;const H={dragon:6,ufo:5,storm:8,tornado:17,volcano:20,tree:12,house:9,poison:8,ice:7,zombie:5,spider:4,custom:7};if(e.g&&e.kind!=="meteor"){const l=lab(e.g,"#ffe066",1.5);l.position.y=H[e.kind]||7;g.add(l)}S.add(g);ES[e.id]={g,mv:e.mv,x:e.x,z:e.z,tx:e.x,tz:e.z,a:e.a,t0:now+e.d};g.position.set(e.x,0,e.z)}
 // ---------- شبکه ----------
 const say=(t,s=3.5)=>{$("#msg").textContent=t;msgT=s};
-function conn(path,on){const web=/^https?:$/.test(location.protocol),w=ws=new WebSocket((web?(location.protocol==="https:"?"wss://":"ws://")+location.host:"wss://roblox.mohammad1392reza2931.workers.dev")+path);w.onopen=()=>{lastMsg=performance.now();w.send(JSON.stringify({t:"hi",name:NAME}))};w.onmessage=e=>{lastMsg=performance.now();on(JSON.parse(e.data))};
- w.onclose=()=>{if(ws===w&&st==="joining"&&!me){st="name";say("اتصال به سرور برقرار نشد؛ دوباره امتحان کن",6);$("#on").classList.add("on")}if(ws===w&&st==="lobby"){say("اتصال قطع شد؛ دوباره وصل می‌شم...");setTimeout(()=>{if(st==="lobby")joinLobby()},2000)}}}
+class PollSock{
+ constructor(url){this.url=url.replace("/ws/","/poll/");this.sid=Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2);this.out=[];this.readyState=0;this.fails=0;this.stop=false;setTimeout(()=>this.run(),0)}
+ send(s){const m=JSON.parse(s);if(m.t==="pos"){const i=this.out.findIndex(x=>x.t==="pos");if(i>=0){this.out[i]=m;return}}this.out.push(m)}
+ async run(){const t0=performance.now();
+  try{const r=await fetch(this.url,{method:"POST",body:JSON.stringify({sid:this.sid,msgs:this.out.splice(0,20)})}),d=await r.json();this.fails=0;
+   if(this.readyState===0){this.readyState=1;this.onopen&&this.onopen()}
+   for(const m of d.m)this.onmessage&&this.onmessage({data:JSON.stringify(m)});
+   if(d.c){this.readyState=3;this.stop=true;this.onclose&&this.onclose({code:1000});return}
+  }catch(e){if(++this.fails>=6){this.readyState=3;this.stop=true;this.onclose&&this.onclose({code:1006});return}}
+  if(!this.stop)setTimeout(()=>this.run(),Math.max(30,110-(performance.now()-t0)))}
+ close(){if(this.stop)return;this.stop=true;this.readyState=3;try{fetch(this.url,{method:"POST",body:JSON.stringify({sid:this.sid,bye:1}),keepalive:true})}catch(e){}}
+}
+function conn(path,on){const web=/^https?:$/.test(location.protocol);let pl=false;try{pl=localStorage.tp==="poll"||/[?&]poll/.test(location.search)}catch(e){}
+ const w=ws=pl?new PollSock((web?"":"https://roblox.mohammad1392reza2931.workers.dev")+path):new WebSocket((web?(location.protocol==="https:"?"wss://":"ws://")+location.host:"wss://roblox.mohammad1392reza2931.workers.dev")+path);w.onopen=()=>{lastMsg=performance.now();w.send(JSON.stringify({t:"hi",name:NAME}))};w.onmessage=e=>{rx++;lastMsg=performance.now();on(JSON.parse(e.data))};
+ w.onclose=e=>{diag="کد بسته‌شدن "+e.code;if(ws===w&&st==="joining"&&!me){st="name";say("اتصال به سرور برقرار نشد؛ دوباره امتحان کن",6);$("#on").classList.add("on")}if(ws===w&&st==="lobby"){say("اتصال قطع شد؛ دوباره وصل می‌شم...");setTimeout(()=>{if(st==="lobby")joinLobby()},2000)}}}
 function joinLobby(){st="lobby";clearAll();pad.visible=padL.visible=true;["oe","oc","od"].forEach(i=>$("#"+i).classList.remove("on"));
  conn("/ws/lobby",m=>{if(m.t==="init"){myId=m.id;say("برو توی محوطه‌ی زرد تا وارد صف سرور بشی",5)}
   else if(m.t==="lob"){qt=m.qt;sync(m.ps,10)}else if(m.t==="note")say(m.text,5);
@@ -144,7 +157,9 @@ function hud(){$("#sb").style.display=st==="lobby"?"block":"none";if(!me)return;
 let last=performance.now();
 function loop(t){requestAnimationFrame(loop);const dt=Math.min(.05,(t-last)/1000);last=t;now=t/1000;
  if(msgT>0&&(msgT-=dt)<=0)$("#msg").textContent="";
- if((st==="lobby"||st==="match")&&ws&&t-lastMsg>4000){say("⚠️ از سرور خبری نیست...",1);if(st==="lobby"&&t-lastMsg>8000){lastMsg=t;ws.close()}}
+ if((st==="lobby"||st==="match")&&ws&&t-lastMsg>4000){
+  if(ws instanceof WebSocket){try{localStorage.tp="poll"}catch(e){}lastMsg=t;ws.close();say("اتصال مستقیم قطع می‌شه؛ روش جایگزین فعال شد 🔁",4);joinLobby()}
+  else{say("⚠️ از سرور خبری نیست ("+rx+" پیام • "+diag+")",1);if(st==="lobby"&&t-lastMsg>10000){lastMsg=t;ws.close()}}}
  const pa=sea.geometry.attributes.position.array;for(let i=0;i<pa.length;i+=3)pa[i+2]=sp0[i+2]+Math.sin(now*.8+sp0[i]*.05+sp0[i+1]*.07)*.6;sea.geometry.attributes.position.needsUpdate=true;
  if(me&&(st==="lobby"||st==="match")){
   let ax=(keys.arrowright||keys.d?1:0)-(keys.arrowleft||keys.a?1:0),ay=(keys.arrowdown||keys.s?1:0)-(keys.arrowup||keys.w?1:0);
